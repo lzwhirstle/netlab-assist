@@ -13,8 +13,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: python -m unittest discover -s tests -v
@@ -27,14 +27,14 @@ jobs:
         include:
           - os: windows-latest
             artifact: netlab-assist-windows
-          - os: macos-14
+          - os: macos-15
             artifact: netlab-assist-macos-arm64
-          - os: macos-13
+          - os: macos-15-intel
             artifact: netlab-assist-macos-intel
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: python -m pip install --disable-pip-version-check pyinstaller
@@ -47,7 +47,7 @@ jobs:
           --collect-data netlab_assist
           --paths src
           run.py
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: dist/netlab-assist*
