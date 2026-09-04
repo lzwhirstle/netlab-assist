@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>NetLab Assist</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+        <div><strong>NetLab Assist</strong><small>网络实验助手</small></div>
+      </div>
+      <nav id="navigation" aria-label="实验模式">
+        <button class="nav-item active" data-page="guide"><span>00</span>开始使用</button>
+        <button class="nav-item" data-page="throughput"><span>01</span>吞吐测试</button>
+        <button class="nav-item" data-page="acl"><span>02</span>ACL验证</button>
+        <button class="nav-item" data-page="multicast"><span>03</span>组播 IPTV</button>
+        <button class="nav-item" data-page="dns"><span>04</span>DNS NAT</button>
+        <button class="nav-item" data-page="monitor"><span>05</span>连续监控</button>
+        <button class="nav-item" data-page="records"><span>06</span>实验记录</button>
+      </nav>
+      <div class="sidebar-note">
+        <span class="status-dot"></span>
+        <div><strong>仅本地运行</strong><small>结果不会自动上传</small></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">NEW HIRE LAB TOOLKIT</p>
+          <h1 id="page-title">开始使用</h1>
+        </div>
+        <div class="node-summary">
+          <div><small>本机地址</small><strong id="local-ip">正在检测</strong></div>
+          <div><small>实验码</small><button id="copy-code" class="code-button" title="复制实验码">------</button></div>
+          <span class="live-pill"><i></i>服务正常</span>
+        </div>
+      </header>
+
+      <section class="page active" id="page-guide">
+        <div class="intro-row">
+          <div><h2>三步完成一次可复核测试</h2><p>每台电脑都运行本工具。它负责构造流量和记录结果，交换机配置、端口计数器与抓包仍作为设备侧证据。</p></div>
+          <div class="preset-badges"><span>离线运行</span><span>无需安装依赖</span><span>结果不上云</span></div>
+        </div>
+        <div class="guide-steps">
+          <article class="panel guide-card"><b>1</b><h3>先做基线</h3><p>两台电脑接入同一 VLAN，确认 IP、网关和链路速率，再用相同参数跑一轮，排除端点性能影响。</p></article>
+          <article class="panel guide-card"><b>2</b><h3>接入目标拓扑</h3><p>输入对端 IP 和页面右上角的实验码。测试期间不要改变时长、并发数和方向。</p></article>
+          <article class="panel guide-card"><b>3</b><h3>保存完整证据</h3><p>导出 Markdown 或 JSON，并同时保存拓扑、设备配置、端口统计、截图和必要的 pcap。</p></article>
+        </div>
+        <div class="panel table-panel">
+          <div class="panel-heading"><div><h3>实验功能索引</h3><p>按实验目的选择模块，不需要先理解所有参数。</p></div></div>
+          <div class="table-wrap"><table><thead><tr><th>目标</th><th>使用模块</th><th>适用实验</th><th>还需配合</th></tr></thead><tbody>
+            <tr><td>吞吐、方向差异、NAT/L3转发</td><td>吞吐测试</td><td>实验二、三、四、九</td><td>端口协商、CPU和成员口计数器</td></tr>
+            <tr><td>访问控制是否符合预期</td><td>ACL验证</td><td>实验十</td><td>策略前基线、命中计数、路由与ARP</td></tr>
+            <tr><td>IGMP加入、丢包与乱序</td><td>组播 IPTV</td><td>实验十一</td><td>IGMP表、端口计数器或抓包</td></tr>
+            <tr><td>DNS报文、NAT前后连接元组</td><td>DNS NAT</td><td>实验四、五</td><td>Wireshark及Gateway会话信息</td></tr>
+            <tr><td>切换、拔线和收敛中断</td><td>连续监控</td><td>实验六、九、十三</td><td>设备事件时间点与拓扑记录</td></tr>
+          </tbody></table></div>
+        </div>
+        <div class="evidence-note"><strong>正式报告</strong><span>本工具不会把推测写成实测。题目明确指定 Chariot、Wireshark 或专用仪表时，需将本工具作为补充，是否替代由导师或测试规范确认。</span></div>
+      </section>
+
+      <section class="page" id="page-throughput">
+        <div class="intro-row">
+          <div><h2>两台电脑运行同一个程序</h2><p>输入对端地址和实验码，即可测试正向、反向或全双工流量。结果按方向分别保留，汇总值不会掩盖单方向瓶颈。</p></div>
+          <div class="preset-badges"><span>实验二</span><span>实验三</span><span>实验四</span><span>实验九</span></div>
+        </div>
+        <div class="grid two-thirds">
+          <form class="panel" id="throughput-form">
+            <div class="panel-heading"><div><h3>测试参数</h3><p>建议先做同VLAN基线，再保持参数不变测试目标拓扑。</p></div></div>
+            <div class="form-grid two">
+              <label>对端IP或主机名<input name="target" placeholder="192.168.1.100" required></label>
+              <label>对端实验码<input name="peer_token" inputmode="numeric" maxlength="12" placeholder="6位实验码" required></label>
+              <label>测试方向<select name="direction"><option value="forward">正向 本机→对端</option><option value="reverse">反向 对端→本机</option><option value="bidirectional">双向同时</option></select></label>
+              <label>并发连接<select name="streams"><option>1</option><option selected>4</option><option>8</option><option>16</option></select></label>
+              <label>持续时间 秒<input name="duration" type="number" min="1" max="120" value="10"></label>
+              <label>对端控制端口<input name="peer_ui_port" type="number" min="1024" max="65535" value="18080"></label>
+            </div>
+            <div class="actions"><button class="primary" type="submit">开始测试</button><button class="secondary" type="button" data-stop-job>停止</button></div>
+          </form>
+          <div class="panel result-panel">
+            <div class="panel-heading"><div><h3>实时结果</h3><p id="throughput-state">等待开始</p></div><span class="metric" id="throughput-live">0.0 <small>Mbps</small></span></div>
+            <canvas id="throughput-chart" width="760" height="280" aria-label="吞吐曲线"></canvas>
+            <div class="metric-grid">
+              <div><small>正向平均</small><strong id="metric-forward">—</strong></div>
+              <div><small>反向平均</small><strong id="metric-reverse">—</strong></div>
+              <div><small>连接数</small><strong id="metric-streams">—</strong></div>
+            </div>
+          </div>
+        </div>
+        <div class="evidence-note"><strong>判定边界</strong><span>NetLab Assist提供可复核的吞吐证据，但题目明确要求Chariot时，仍需导师确认能否作为替代或补充工具。</span></div>
+      </section>
+
+      <section class="page" id="page-acl">
+        <div class="intro-row"><div><h2>先做基线，再验证策略</h2><p>同一矩阵在ACL下发前后各跑一次。连接被拒绝说明目标可达但服务未监听，不能当成ACL阻断。</p></div><div class="preset-badges"><span>实验十</span><span>IPv4</span><span>IPv6</span></div></div>
+        <div class="grid two-thirds">
+          <div class="panel">
+            <div class="panel-heading"><div><h3>验证矩阵</h3><p>每行格式：名称,目标,方式,端口,预期。Ping端口可留空。</p></div><button id="acl-preset" class="ghost" type="button">载入实验十模板</button></div>
+            <textarea id="acl-matrix" rows="11" spellcheck="false" placeholder="PC2访问Switch HTTPS,192.168.4.2,tcp,443,deny&#10;PC1访问PC2 RDP,192.168.4.100,tcp,3389,allow&#10;PC2 Ping网关,192.168.4.2,ping,,allow"></textarea>
+            <div class="actions"><button class="primary" id="run-acl" type="button">执行矩阵</button><button class="secondary" id="clear-acl" type="button">清空结果</button></div>
+          </div>
+          <div class="panel">
+            <div class="panel-heading"><div><h3>本轮结论</h3><p id="acl-summary">尚未执行</p></div></div>
+            <div class="score-ring" id="acl-score"><strong>—</strong><small>符合预期</small></div>
+            <ul class="legend"><li><i class="ok"></i>符合：结果与预期一致</li><li><i class="warn"></i>待确认：端口拒绝或无基线</li><li><i class="bad"></i>不符合：明确连通性与策略相反</li></ul>
+          </div>
+        </div>
+        <div class="panel table-panel"><div class="panel-heading"><div><h3>逐项结果</h3><p>请把“测试阶段”写入导出文件名，例如 Before ACL 或 After ACL。</p></div></div><div class="table-wrap"><table><thead><tr><th>名称</th><th>目标</th><th>协议</th><th>预期</th><th>观测</th><th>结论</th><th>耗时</th></tr></thead><tbody id="acl-results"><tr><td colspan="7" class="empty">暂无结果</td></tr></tbody></table></div></div>
+        <div class="evidence-note"><strong>暂不支持</strong><span>BPDU属于原始二层帧，v0.1不在无管理员权限的情况下伪造发送。该项仍应使用获准的发包工具和抓包验证。</span></div>
+      </section>
+
+      <section class="page" id="page-multicast">
+        <div class="intro-row"><div><h2>可控组播源与接收端</h2><p>用序列号和时间戳统计码率、丢包和乱序。VLC负责视频体验，本工具负责可量化的转发证据。</p></div><div class="preset-badges"><span>实验十一</span><span>IGMP</span><span>235.0.0.10</span></div></div>
+        <div class="grid equal">
+          <form class="panel" id="multicast-form">
+            <div class="panel-heading"><div><h3>频道参数</h3><p>接收端先启动，再启动发送端。</p></div></div>
+            <div class="segmented"><label><input type="radio" name="role" value="receiver" checked><span>接收频道</span></label><label><input type="radio" name="role" value="sender"><span>发送频道</span></label></div>
+            <div class="form-grid two">
+              <label>组播地址<input name="group" value="235.0.0.10" required></label>
+              <label>UDP端口<input name="port" type="number" value="5000" min="1024" max="65535"></label>
+              <label>持续时间 秒<input name="duration" type="number" value="30" min="1" max="600"></label>
+              <label>发送速率 Mbps<input name="rate_mbps" type="number" value="5" min="0.05" max="50" step="0.05"></label>
+            </div>
+            <div class="actions"><button class="primary" type="submit">启动组播任务</button><button class="secondary" type="button" data-stop-job>退出或停止</button></div>
+          </form>
+          <div class="panel result-panel">
+            <div class="panel-heading"><div><h3>频道观测</h3><p id="multicast-state">等待启动</p></div><span class="metric" id="multicast-live">0.0 <small>Mbps</small></span></div>
+            <canvas id="multicast-chart" width="760" height="280" aria-label="组播速率曲线"></canvas>
+            <div class="metric-grid"><div><small>接收包</small><strong id="mc-packets">—</strong></div><div><small>丢包率</small><strong id="mc-loss">—</strong></div><div><small>乱序</small><strong id="mc-ooo">—</strong></div></div>
+          </div>
+        </div>
+        <div class="evidence-note"><strong>交换机侧证明</strong><span>还需结合 show ip igmp snooping groups、端口计数器、SNMP或Wireshark，不能只凭应用是否收到数据判断Snooping行为。</span></div>
+      </section>
+
+      <section class="page" id="page-dns">
+        <div class="intro-row"><div><h2>排除浏览器代理干扰</h2><p>直接向指定DNS Server构造A或AAAA查询，并记录源端口、Transaction ID、报文长度与应答。</p></div><div class="preset-badges"><span>实验四</span><span>实验五</span><span>UDP TCP</span></div></div>
+        <div class="grid equal">
+          <form class="panel" id="dns-form">
+            <div class="panel-heading"><div><h3>DNS查询</h3><p>Proxy与Forwarding应在相同域名和相近时间内分别测试。</p></div></div>
+            <div class="form-grid two"><label>DNS Server<input name="server" value="192.168.1.1" required></label><label>DNS端口<input name="port" type="number" min="1" max="65535" value="53" required></label><label>查询域名<input name="name" value="www.baidu.com" required></label><label>传输层<select name="transport"><option value="udp">UDP</option><option value="tcp">TCP</option></select></label><label>记录类型<select name="qtype"><option>A</option><option>AAAA</option></select></label><label>Transaction ID 可选<input name="txid" placeholder="例如 7946 或留空"></label></div>
+            <div class="actions"><button class="primary" type="submit">发送DNS查询</button></div>
+            <pre id="dns-result" class="result-code">等待查询</pre>
+          </form>
+          <form class="panel" id="nat-form">
+            <div class="panel-heading"><div><h3>NAT连接元组</h3><p>对端也必须运行NetLab Assist。结果同时显示客户端和服务端看到的地址。</p></div></div>
+            <div class="form-grid two"><label>对端IP<input name="target" placeholder="192.168.2.2" required></label><label>对端实验码<input name="peer_token" placeholder="6位实验码" required></label><label>元组端口<input name="port" type="number" value="18882"></label></div>
+            <div class="actions"><button class="primary" type="submit">观察连接元组</button></div>
+            <pre id="nat-result" class="result-code">等待连接</pre>
+          </form>
+        </div>
+      </section>
+
+      <section class="page" id="page-monitor">
+        <div class="intro-row"><div><h2>精确记录中断与恢复</h2><p>适合管理VLAN切换、LACP成员口拔插和RSTP收敛。测试目标必须有正在监听的TCP服务。</p></div><div class="preset-badges"><span>实验六</span><span>实验九</span><span>实验十三</span></div></div>
+        <div class="grid two-thirds">
+          <form class="panel" id="monitor-form">
+            <div class="panel-heading"><div><h3>监控参数</h3><p>建议目标使用对端NetLab Assist的18882端口。</p></div></div>
+            <div class="form-grid two"><label>目标IP<input name="target" placeholder="192.168.2.2" required></label><label>TCP端口<input name="port" type="number" value="18882"></label><label>检测间隔 秒<input name="interval" type="number" value="0.5" min="0.1" max="10" step="0.1"></label><label>持续时间 秒<input name="duration" type="number" value="120" min="1" max="1800"></label></div>
+            <div class="actions"><button class="primary" type="submit">开始监控</button><button class="secondary" type="button" data-stop-job>停止</button></div>
+          </form>
+          <div class="panel result-panel">
+            <div class="panel-heading"><div><h3>可达性时间线</h3><p id="monitor-state">等待开始</p></div><span class="metric small" id="monitor-live">—</span></div>
+            <canvas id="monitor-chart" width="760" height="280" aria-label="可达性时间线"></canvas>
+            <div class="metric-grid"><div><small>可用率</small><strong id="mon-availability">—</strong></div><div><small>最长中断</small><strong id="mon-outage">—</strong></div><div><small>状态变化</small><strong id="mon-transitions">—</strong></div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="page-records">
+        <div class="intro-row"><div><h2>结果留痕，而不是只截一张图</h2><p>记录保存在当前浏览器中。导出JSON后可与截图、pcap和交换机配置一起归档。</p></div><div class="preset-badges"><span id="record-count">0条记录</span></div></div>
+        <div class="panel"><div class="panel-heading"><div><h3>本机历史</h3><p>默认最多保留最近100条。</p></div><div class="compact-actions"><button class="secondary" id="export-report" type="button">导出报告Markdown</button><button class="secondary" id="export-records" type="button">导出原始JSON</button><button class="ghost danger" id="clear-records" type="button">清空本机记录</button></div></div><div id="record-list" class="record-list"><div class="empty-card">暂无实验记录</div></div></div>
+      </section>
+    </main>
+  </div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

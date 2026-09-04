@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "netlab-assist"
+version = "0.1.0"
+description = "Lightweight, evidence-first network lab assistant for new hires and test teams"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Liang Zheng" }
+]
+dependencies = []
+
+[project.scripts]
+netlab-assist = "netlab_assist.main:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+netlab_assist = ["web/*"]
