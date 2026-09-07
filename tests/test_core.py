@@ -14,6 +14,7 @@ from urllib import request
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from netlab_assist import __version__
 from netlab_assist.config import Settings
 from netlab_assist.jobs import JobManager
 from netlab_assist.protocols import (
@@ -152,7 +153,7 @@ class APITests(unittest.TestCase):
     def test_status_static_and_probe(self) -> None:
         status = self.get_json("/api/status")
         self.assertEqual(status["access_code"], "112233")
-        self.assertEqual(status["version"], "0.1.0")
+        self.assertEqual(status["version"], __version__)
         with request.urlopen(f"http://127.0.0.1:{self.settings.ui_port}/", timeout=3) as response:
             self.assertIn(b"NetLab Assist", response.read())
         probe = self.post_json("/api/probe", {"target": "127.0.0.1", "kind": "tcp", "port": self.settings.echo_port})

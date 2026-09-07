@@ -45,8 +45,12 @@ jobs:
           --name netlab-assist
           --onefile
           --collect-data netlab_assist
+          --add-data "src/netlab_assist/web:netlab_assist/web"
           --paths src
           run.py
+      - name: Smoke-test packaged application
+        shell: bash
+        run: python scripts/smoke_test_binary.py dist/netlab-assist*
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}

@@ -37,6 +37,7 @@ from .protocols import (
 
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
+REQUIRED_WEB_FILES = ("index.html", "app.js", "styles.css")
 
 
 @dataclass
@@ -316,6 +317,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def create_servers(settings: Settings) -> tuple[NetLabHTTPServer, Any, Any]:
+    missing = [name for name in REQUIRED_WEB_FILES if not (WEB_ROOT / name).is_file()]
+    if missing:
+        raise FileNotFoundError(f"packaged web assets are missing: {', '.join(missing)}")
     settings = settings.normalized()
     state = ApplicationState(settings=settings, jobs=JobManager(), started_monotonic=time.monotonic(), started_at=utc_now())
     throughput_sink = start_sink(settings.throughput_port, settings.access_code, ThroughputSinkHandler)
