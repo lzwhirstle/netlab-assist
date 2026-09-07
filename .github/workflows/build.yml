@@ -48,6 +48,10 @@ jobs:
           --add-data "src/netlab_assist/web:netlab_assist/web"
           --paths src
           run.py
+      - name: Re-sign macOS standalone executable
+        if: runner.os == 'macOS'
+        shell: bash
+        run: codesign --force --deep --sign - dist/netlab-assist
       - name: Smoke-test packaged application
         shell: bash
         run: python scripts/smoke_test_binary.py dist/netlab-assist*
