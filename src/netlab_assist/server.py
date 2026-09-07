@@ -28,16 +28,26 @@ from .protocols import (
     nat_tuple_probe,
     ping_probe,
     reachability_monitor,
+    remote_peer_call,
     remote_throughput,
+    route_ipv4_for,
     run_throughput_sender,
     secrets_equal,
     start_sink,
     tcp_probe,
+    throughput_sink_probe,
 )
 
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
 REQUIRED_WEB_FILES = ("index.html", "app.js", "styles.css")
+PEER_ENDPOINTS = {
+    "/api/peer/status",
+    "/api/peer/throughput",
+    "/api/peer/multicast/start",
+    "/api/peer/job",
+    "/api/peer/job/cancel",
+}
 
 
 @dataclass
@@ -103,13 +113,23 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         try:
-            if parsed.path != "/api/peer/throughput" and not self._is_local():
+            if parsed.path not in PEER_ENDPOINTS and not self._is_local():
                 raise PermissionError("local test controls are available only from this computer")
             body = self._body()
             if parsed.path == "/api/throughput":
                 self._start_throughput(body)
+            elif parsed.path == "/api/peer/check":
+                self._peer_check(body)
+            elif parsed.path == "/api/peer/status":
+                self._peer_status()
             elif parsed.path == "/api/peer/throughput":
                 self._run_peer_throughput(body)
+            elif parsed.path == "/api/peer/multicast/start":
+                self._run_peer_multicast(body)
+            elif parsed.path == "/api/peer/job":
+                self._run_peer_job(body)
+            elif parsed.path == "/api/peer/job/cancel":
+                self._run_peer_job_cancel(body)
             elif parsed.path == "/api/probe":
                 self._probe(body)
             elif parsed.path == "/api/dns":
@@ -124,6 +144,8 @@ class Handler(BaseHTTPRequestHandler):
                 ))
             elif parsed.path == "/api/multicast/start":
                 self._start_multicast(body)
+            elif parsed.path == "/api/multicast/pair":
+                self._start_paired_multicast(body)
             elif parsed.path == "/api/monitor/start":
                 self._start_monitor(body)
             elif parsed.path.startswith("/api/jobs/") and parsed.path.endswith("/cancel"):
@@ -151,7 +173,8 @@ class Handler(BaseHTTPRequestHandler):
         duration = int(body.get("duration", 10))
         streams = int(body.get("streams", 1))
         peer_ui_port = int(body.get("peer_ui_port", settings.ui_port))
-        peer_throughput_port = int(body.get("peer_throughput_port", settings.throughput_port))
+        peer_status = remote_peer_call(target, peer_ui_port, peer_token, "/api/peer/status")
+        peer_throughput_port = int(peer_status.get("throughput_port", body.get("peer_throughput_port", settings.throughput_port)))
 
         def task(context: JobContext) -> dict[str, Any]:
             results: dict[str, Any] = {}
@@ -202,9 +225,104 @@ class Handler(BaseHTTPRequestHandler):
         job_id = self.state.jobs.start("throughput", task)
         self._json({"job_id": job_id, "status": "queued"}, HTTPStatus.ACCEPTED)
 
-    def _run_peer_throughput(self, body: dict[str, Any]) -> None:
+    def _require_peer_token(self) -> None:
         if not secrets_equal(self.headers.get("X-Lab-Token", ""), self.state.settings.access_code):
             raise PermissionError("invalid peer access code")
+
+    def _peer_status(self) -> None:
+        self._require_peer_token()
+        settings = self.state.settings
+        self._json({
+            "app": "NetLab Assist",
+            "version": __version__,
+            "hostname": socket.gethostname(),
+            "local_ips": local_ipv4_addresses(),
+            "ui_port": settings.ui_port,
+            "throughput_port": settings.throughput_port,
+            "echo_port": settings.echo_port,
+            "uptime_s": round(time.monotonic() - self.state.started_monotonic, 1),
+        })
+
+    @staticmethod
+    def _check_result(name: str, operation: Callable[[], Any]) -> dict[str, Any]:
+        started = time.monotonic()
+        try:
+            detail = operation()
+            return {
+                "name": name,
+                "ok": True,
+                "classification": "ready",
+                "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+                "detail": detail,
+            }
+        except PermissionError as exc:
+            classification = "invalid_code"
+            message = str(exc)
+        except ConnectionRefusedError as exc:
+            classification = "refused"
+            message = str(exc)
+        except (TimeoutError, socket.timeout) as exc:
+            classification = "timeout"
+            message = str(exc) or "timeout"
+        except ConnectionError as exc:
+            classification = "incompatible" if "incompatible" in str(exc).lower() else "network_error"
+            message = str(exc)
+        except OSError as exc:
+            classification = "network_error"
+            message = str(exc)
+        except Exception as exc:
+            classification = "peer_error"
+            message = str(exc)
+        return {
+            "name": name,
+            "ok": False,
+            "classification": classification,
+            "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+            "error": message,
+        }
+
+    def _peer_check(self, body: dict[str, Any]) -> None:
+        target = clean_host(body.get("target"))
+        token = str(body.get("peer_token") or "").strip().upper()
+        ui_port = int(body.get("peer_ui_port", self.state.settings.ui_port))
+        control = self._check_result(
+            "control",
+            lambda: remote_peer_call(target, ui_port, token, "/api/peer/status", timeout=4),
+        )
+        if not control["ok"]:
+            self._json({
+                "ready": False,
+                "target": target,
+                "checks": {"control": control},
+                "classification": control["classification"],
+            })
+            return
+        peer = control["detail"]
+        throughput_port = int(peer["throughput_port"])
+        echo_port = int(peer["echo_port"])
+        throughput = self._check_result(
+            "throughput",
+            lambda: throughput_sink_probe(target, throughput_port, token),
+        )
+        echo = self._check_result(
+            "echo",
+            lambda: nat_tuple_probe(target, echo_port, token),
+        )
+        checks = {"control": control, "throughput": throughput, "echo": echo}
+        route_ip = None
+        if throughput.get("ok"):
+            route_ip = str(throughput.get("detail", {}).get("local", "")).rsplit(":", 1)[0] or None
+        self._json({
+            "ready": all(item["ok"] for item in checks.values()),
+            "target": target,
+            "peer": peer,
+            "checks": checks,
+            "route_ip": route_ip,
+            "classification": "ready" if all(item["ok"] for item in checks.values()) else "service_blocked",
+        })
+
+    def _run_peer_throughput(self, body: dict[str, Any]) -> None:
+        self._require_peer_token()
         # Reflection safeguard: ignore an arbitrary target in the body and send only to the requesting host.
         target = self.client_address[0]
         result = run_throughput_sender(
@@ -217,6 +335,45 @@ class Handler(BaseHTTPRequestHandler):
             "reverse",
         )
         self._json(result)
+
+    def _run_peer_multicast(self, body: dict[str, Any]) -> None:
+        self._require_peer_token()
+        role = str(body.get("role", "receiver")).lower()
+        group = body.get("group", "235.0.0.10")
+        port = int(body.get("port", 5000))
+        duration = int(body.get("duration", 30))
+        interface_ip = route_ipv4_for(self.client_address[0], self.state.settings.ui_port)
+        if role == "sender":
+            rate = float(body.get("rate_mbps", 5))
+            job_id = self.state.jobs.start(
+                "peer_multicast_sender",
+                lambda context: multicast_sender(context, group, port, rate, duration, interface_ip=interface_ip),
+            )
+        elif role == "receiver":
+            job_id = self.state.jobs.start(
+                "peer_multicast_receiver",
+                lambda context: multicast_receiver(context, group, port, duration, interface_ip=interface_ip),
+            )
+        else:
+            raise ValueError("multicast role must be sender or receiver")
+        self._json({"job_id": job_id, "status": "queued"}, HTTPStatus.ACCEPTED)
+
+    def _run_peer_job(self, body: dict[str, Any]) -> None:
+        self._require_peer_token()
+        job_id = str(body.get("job_id") or "")
+        job = self.state.jobs.get(job_id)
+        if not job:
+            self._error(HTTPStatus.NOT_FOUND, "job not found")
+        else:
+            self._json(job)
+
+    def _run_peer_job_cancel(self, body: dict[str, Any]) -> None:
+        self._require_peer_token()
+        job_id = str(body.get("job_id") or "")
+        if not self.state.jobs.cancel(job_id):
+            self._error(HTTPStatus.NOT_FOUND, "job not found")
+        else:
+            self._json({"ok": True, "job_id": job_id})
 
     def _probe(self, body: dict[str, Any]) -> None:
         kind = str(body.get("kind", "tcp")).lower()
@@ -247,6 +404,117 @@ class Handler(BaseHTTPRequestHandler):
             )
         else:
             raise ValueError("multicast role must be sender or receiver")
+        self._json({"job_id": job_id, "status": "queued"}, HTTPStatus.ACCEPTED)
+
+    def _start_paired_multicast(self, body: dict[str, Any]) -> None:
+        target = clean_host(body.get("target"))
+        token = str(body.get("peer_token") or "").strip().upper()
+        ui_port = int(body.get("peer_ui_port", self.state.settings.ui_port))
+        direction = str(body.get("direction", "forward")).lower()
+        if direction not in {"forward", "reverse"}:
+            raise ValueError("direction must be forward or reverse")
+        group = body.get("group", "235.0.0.10")
+        port = int(body.get("port", 5000))
+        duration = int(body.get("duration", 30))
+        rate = float(body.get("rate_mbps", 5))
+        remote_peer_call(target, ui_port, token, "/api/peer/status", timeout=4)
+        local_interface_ip = route_ipv4_for(target, ui_port)
+
+        def wait_peer_job(job_id: str, context: JobContext) -> dict[str, Any]:
+            deadline = time.monotonic() + duration + 12
+            while time.monotonic() < deadline:
+                if context.cancelled:
+                    remote_peer_call(
+                        target, ui_port, token, "/api/peer/job/cancel", {"job_id": job_id}, timeout=4,
+                    )
+                job = remote_peer_call(
+                    target, ui_port, token, "/api/peer/job", {"job_id": job_id}, timeout=4,
+                )
+                if job.get("status") in {"completed", "failed", "cancelled"}:
+                    if job.get("status") == "failed":
+                        raise ConnectionError(f"peer multicast task failed: {job.get('error') or 'unknown error'}")
+                    return job
+                time.sleep(0.25)
+            raise TimeoutError("peer multicast task did not finish in time")
+
+        def task(context: JobContext) -> dict[str, Any]:
+            remote_job_id = ""
+            local_result: dict[str, Any] = {}
+            local_error: list[Exception] = []
+            remote_role = "receiver" if direction == "forward" else "sender"
+            local_role = "sender" if direction == "forward" else "receiver"
+            remote_duration = duration + 1 if remote_role == "receiver" else duration
+            local_duration = duration + 1 if local_role == "receiver" else duration
+            try:
+                if direction == "forward":
+                    started = remote_peer_call(
+                        target,
+                        ui_port,
+                        token,
+                        "/api/peer/multicast/start",
+                        {"role": remote_role, "group": group, "port": port, "duration": remote_duration, "rate_mbps": rate},
+                        timeout=4,
+                    )
+                    remote_job_id = str(started["job_id"])
+                    time.sleep(0.45)
+                    local_result = multicast_sender(
+                        context, group, port, rate, local_duration, interface_ip=local_interface_ip,
+                    )
+                    remote_job = wait_peer_job(remote_job_id, context)
+                else:
+                    def receive_local() -> None:
+                        try:
+                            local_result.update(multicast_receiver(
+                                context, group, port, local_duration, interface_ip=local_interface_ip,
+                            ))
+                        except Exception as exc:
+                            local_error.append(exc)
+
+                    receiver_thread = threading.Thread(target=receive_local, daemon=True)
+                    receiver_thread.start()
+                    time.sleep(0.45)
+                    started = remote_peer_call(
+                        target,
+                        ui_port,
+                        token,
+                        "/api/peer/multicast/start",
+                        {"role": remote_role, "group": group, "port": port, "duration": remote_duration, "rate_mbps": rate},
+                        timeout=4,
+                    )
+                    remote_job_id = str(started["job_id"])
+                    remote_job = wait_peer_job(remote_job_id, context)
+                    receiver_thread.join(duration + 5)
+                    if local_error:
+                        raise local_error[0]
+                    if receiver_thread.is_alive():
+                        raise TimeoutError("local multicast receiver did not finish in time")
+                remote_result = remote_job.get("result") or {}
+                receiver_result = remote_result if remote_role == "receiver" else local_result
+                sender_result = local_result if local_role == "sender" else remote_result
+                return {
+                    "mode": direction,
+                    "peer": target,
+                    "local_role": local_role,
+                    "peer_role": remote_role,
+                    "sender": sender_result,
+                    "receiver": receiver_result,
+                    "average_mbps": receiver_result.get("average_mbps"),
+                    "packets": receiver_result.get("packets"),
+                    "loss_percent": receiver_result.get("loss_percent"),
+                    "out_of_order": receiver_result.get("out_of_order"),
+                    "measured_at": utc_now(),
+                    "evidence_note": "The peer receiver is started automatically before the sender; only the control side is clicked.",
+                }
+            finally:
+                if context.cancelled and remote_job_id:
+                    try:
+                        remote_peer_call(
+                            target, ui_port, token, "/api/peer/job/cancel", {"job_id": remote_job_id}, timeout=4,
+                        )
+                    except Exception:
+                        pass
+
+        job_id = self.state.jobs.start("paired_multicast", task)
         self._json({"job_id": job_id, "status": "queued"}, HTTPStatus.ACCEPTED)
 
     def _start_monitor(self, body: dict[str, Any]) -> None:

@@ -14,13 +14,14 @@ import subprocess
 import threading
 import time
 from typing import Any
-from urllib import request
+from urllib import error as urlerror, request
 
 from .config import MAX_DURATION, MAX_MULTICAST_RATE_MBPS, MAX_STREAMS
 from .jobs import JobContext, utc_now
 
 
 BUFFER = b"N" * (128 * 1024)
+DIRECT_HTTP_OPENER = request.build_opener(request.ProxyHandler({}))
 
 
 def clamp_int(value: Any, low: int, high: int, name: str) -> int:
@@ -290,21 +291,98 @@ def remote_throughput(
     duration: int,
     streams: int,
 ) -> dict[str, Any]:
+    return remote_peer_call(
+        peer,
+        ui_port,
+        peer_token,
+        "/api/peer/throughput",
+        {
+            "sink_token": sink_token,
+            "sink_port": sink_port,
+            "duration": duration,
+            "streams": streams,
+        },
+        timeout=duration + 15,
+    )
+
+
+def remote_peer_call(
+    peer: str,
+    ui_port: int,
+    peer_token: str,
+    path: str,
+    body: dict[str, Any] | None = None,
+    timeout: float = 5.0,
+) -> dict[str, Any]:
     peer = clean_host(peer)
-    body = json.dumps({
-        "sink_token": sink_token,
-        "sink_port": sink_port,
-        "duration": duration,
-        "streams": streams,
-    }).encode("utf-8")
+    ui_port = clamp_int(ui_port, 1024, 65535, "peer UI port")
+    peer_token = str(peer_token or "").strip().upper()
+    if not peer_token:
+        raise ValueError("peer access code is required")
+    payload = json.dumps(body or {}).encode("utf-8")
     req = request.Request(
-        f"http://{peer}:{ui_port}/api/peer/throughput",
-        data=body,
+        f"http://{peer}:{ui_port}{path}",
+        data=payload,
         headers={"Content-Type": "application/json", "X-Lab-Token": peer_token},
         method="POST",
     )
-    with request.urlopen(req, timeout=duration + 15) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with DIRECT_HTTP_OPENER.open(req, timeout=timeout) as response:
+            parsed = json.loads(response.read().decode("utf-8"))
+    except urlerror.HTTPError as exc:
+        status_code = exc.code
+        try:
+            payload = json.loads(exc.read().decode("utf-8"))
+            message = str(payload.get("error") or f"peer returned HTTP {status_code}")
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            message = f"peer returned HTTP {status_code}"
+        finally:
+            exc.close()
+        if status_code == 403 and "local test controls" in message.lower():
+            raise ConnectionError("peer version is incompatible; upgrade both computers") from exc
+        if status_code == 403:
+            raise PermissionError("peer rejected the access code") from exc
+        if status_code == 404:
+            raise ConnectionError("peer version is incompatible; upgrade both computers") from exc
+        raise ConnectionError(message) from exc
+    except urlerror.URLError as exc:
+        reason = exc.reason
+        reason_errno = getattr(reason, "errno", None)
+        if isinstance(reason, ConnectionRefusedError) or reason_errno in {61, 111, 10061}:
+            raise ConnectionRefusedError("peer control port refused the connection") from exc
+        if isinstance(reason, (socket.timeout, TimeoutError)) or reason_errno in {60, 110, 10060}:
+            raise TimeoutError("peer control port timed out") from exc
+        raise ConnectionError(f"peer control connection failed: {reason}") from exc
+    except socket.timeout as exc:
+        raise TimeoutError("peer control port timed out") from exc
+    except json.JSONDecodeError as exc:
+        raise ConnectionError("peer returned an invalid response") from exc
+    if not isinstance(parsed, dict):
+        raise ConnectionError("peer returned an invalid response")
+    return parsed
+
+
+def throughput_sink_probe(target: str, port: int, token: str, timeout: float = 4.0) -> dict[str, Any]:
+    target = clean_host(target)
+    port = clamp_int(port, 1024, 65535, "throughput port")
+    started = time.monotonic()
+    with socket.create_connection((target, port), timeout=timeout) as sock:
+        local = f"{sock.getsockname()[0]}:{sock.getsockname()[1]}"
+        remote = f"{sock.getpeername()[0]}:{sock.getpeername()[1]}"
+        sock.settimeout(timeout)
+        hello = {"token": str(token or "").strip().upper(), "stream": 0, "label": "readiness"}
+        sock.sendall(b"NLA1 " + json.dumps(hello).encode("utf-8") + b"\n")
+        response = _read_line(sock)
+    if response == b"DENY\n":
+        raise PermissionError("peer rejected the access code")
+    if response != b"OK\n":
+        raise ConnectionError("peer throughput service returned an invalid response")
+    return {
+        "ok": True,
+        "local": local,
+        "remote": remote,
+        "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+    }
 
 
 def nat_tuple_probe(target: str, port: int, token: str, timeout: float = 5.0) -> dict[str, Any]:
@@ -543,7 +621,7 @@ class MulticastPacket:
 
 
 def multicast_sender(context: JobContext, group: str, port: int, rate_mbps: float, duration: int,
-                     packet_size: int = 1200) -> dict[str, Any]:
+                     packet_size: int = 1200, interface_ip: str | None = None) -> dict[str, Any]:
     address = ipaddress.ip_address(group)
     if not isinstance(address, ipaddress.IPv4Address) or not address.is_multicast:
         raise ValueError("group must be an IPv4 multicast address")
@@ -555,8 +633,16 @@ def multicast_sender(context: JobContext, group: str, port: int, rate_mbps: floa
     header = struct.Struct("!4sIIQ")
     padding = b"M" * (packet_size - header.size)
     interval = packet_size * 8 / (rate_mbps * 1_000_000)
+    interface_bytes = None
+    if interface_ip:
+        interface = ipaddress.ip_address(interface_ip)
+        if not isinstance(interface, ipaddress.IPv4Address):
+            raise ValueError("multicast interface must be an IPv4 address")
+        interface_bytes = socket.inet_aton(str(interface))
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 16)
+    if interface_bytes:
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, interface_bytes)
     started = time.monotonic()
     deadline = started + duration
     next_send = started
@@ -584,12 +670,13 @@ def multicast_sender(context: JobContext, group: str, port: int, rate_mbps: floa
     finally:
         sock.close()
     elapsed = max(0.001, time.monotonic() - started)
-    return {"role": "sender", "group": str(address), "port": port, "session": session, "packets": sequence,
+    return {"role": "sender", "group": str(address), "port": port, "interface_ip": interface_ip, "session": session, "packets": sequence,
             "bytes": bytes_sent, "elapsed_s": round(elapsed, 3), "average_mbps": round(bytes_sent * 8 / elapsed / 1_000_000, 3),
             "cancelled": context.cancelled, "measured_at": utc_now()}
 
 
-def multicast_receiver(context: JobContext, group: str, port: int, duration: int) -> dict[str, Any]:
+def multicast_receiver(context: JobContext, group: str, port: int, duration: int,
+                       interface_ip: str | None = None) -> dict[str, Any]:
     address = ipaddress.ip_address(group)
     if not isinstance(address, ipaddress.IPv4Address) or not address.is_multicast:
         raise ValueError("group must be an IPv4 multicast address")
@@ -600,7 +687,14 @@ def multicast_receiver(context: JobContext, group: str, port: int, duration: int
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         sock.bind(("", port))
-        membership = socket.inet_aton(str(address)) + socket.inet_aton("0.0.0.0")
+        if interface_ip:
+            interface = ipaddress.ip_address(interface_ip)
+            if not isinstance(interface, ipaddress.IPv4Address):
+                raise ValueError("multicast interface must be an IPv4 address")
+            membership_interface = str(interface)
+        else:
+            membership_interface = "0.0.0.0"
+        membership = socket.inet_aton(str(address)) + socket.inet_aton(membership_interface)
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, membership)
         sock.settimeout(0.25)
         started = time.monotonic()
@@ -642,7 +736,7 @@ def multicast_receiver(context: JobContext, group: str, port: int, duration: int
         elapsed = max(0.001, time.monotonic() - started)
         total_expected = packets + lost
         return {
-            "role": "receiver", "group": str(address), "port": port, "packets": packets, "lost": lost,
+            "role": "receiver", "group": str(address), "port": port, "interface_ip": interface_ip, "packets": packets, "lost": lost,
             "out_of_order": out_of_order, "loss_percent": round(lost * 100 / total_expected, 4) if total_expected else 0.0,
             "bytes": bytes_received, "elapsed_s": round(elapsed, 3),
             "average_mbps": round(bytes_received * 8 / elapsed / 1_000_000, 3),

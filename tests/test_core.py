@@ -8,7 +8,7 @@ import sys
 import threading
 import time
 import unittest
-from urllib import request
+from urllib import error as urlerror, request
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +31,12 @@ from netlab_assist.server import create_servers
 
 def free_port() -> int:
     with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def free_udp_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
 
@@ -150,6 +156,16 @@ class APITests(unittest.TestCase):
         with request.urlopen(req, timeout=3) as response:
             return json.loads(response.read())
 
+    def post_peer_json(self, path: str, body: dict, token: str = "112233") -> dict:
+        req = request.Request(
+            f"http://127.0.0.1:{self.settings.ui_port}{path}",
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json", "X-Lab-Token": token},
+            method="POST",
+        )
+        with request.urlopen(req, timeout=5) as response:
+            return json.loads(response.read())
+
     def test_status_static_and_probe(self) -> None:
         status = self.get_json("/api/status")
         self.assertEqual(status["access_code"], "112233")
@@ -158,6 +174,42 @@ class APITests(unittest.TestCase):
             self.assertIn(b"NetLab Assist", response.read())
         probe = self.post_json("/api/probe", {"target": "127.0.0.1", "kind": "tcp", "port": self.settings.echo_port})
         self.assertTrue(probe["ok"])
+
+    def test_peer_readiness_checks_all_services(self) -> None:
+        result = self.post_json("/api/peer/check", {
+            "target": "127.0.0.1",
+            "peer_token": self.settings.access_code,
+            "peer_ui_port": self.settings.ui_port,
+        })
+        self.assertTrue(result["ready"], result)
+        self.assertEqual(set(result["checks"]), {"control", "throughput", "echo"})
+        self.assertTrue(all(item["ok"] for item in result["checks"].values()))
+
+    def test_peer_check_explains_bad_code(self) -> None:
+        result = self.post_json("/api/peer/check", {
+            "target": "127.0.0.1",
+            "peer_token": "000000",
+            "peer_ui_port": self.settings.ui_port,
+        })
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["classification"], "invalid_code")
+
+    def test_peer_check_explains_closed_control_port(self) -> None:
+        result = self.post_json("/api/peer/check", {
+            "target": "127.0.0.1",
+            "peer_token": self.settings.access_code,
+            "peer_ui_port": free_port(),
+        })
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["classification"], "refused")
+
+    def test_peer_status_requires_current_access_code(self) -> None:
+        status = self.post_peer_json("/api/peer/status", {})
+        self.assertEqual(status["version"], __version__)
+        with self.assertRaises(urlerror.HTTPError) as denied:
+            self.post_peer_json("/api/peer/status", {}, token="000000")
+        self.assertEqual(denied.exception.code, 403)
+        denied.exception.close()
 
     def test_bidirectional_throughput_job(self) -> None:
         started = self.post_json("/api/throughput", {
@@ -181,6 +233,29 @@ class APITests(unittest.TestCase):
         self.assertIn("forward", job["result"]["results"])
         self.assertIn("reverse", job["result"]["results"])
         self.assertGreater(job["result"]["aggregate_average_mbps"], 0)
+
+    def test_one_click_paired_multicast_job(self) -> None:
+        started = self.post_json("/api/multicast/pair", {
+            "target": "127.0.0.1",
+            "peer_token": self.settings.access_code,
+            "peer_ui_port": self.settings.ui_port,
+            "direction": "forward",
+            "group": "239.255.23.42",
+            "port": free_udp_port(),
+            "duration": 1,
+            "rate_mbps": 0.1,
+        })
+        deadline = time.monotonic() + 10
+        job = None
+        while time.monotonic() < deadline:
+            job = self.get_json(f"/api/jobs/{started['job_id']}")
+            if job["status"] in {"completed", "failed", "cancelled"}:
+                break
+            time.sleep(0.1)
+        self.assertIsNotNone(job)
+        self.assertEqual(job["status"], "completed", job.get("error"))
+        self.assertEqual(job["result"]["local_role"], "sender")
+        self.assertEqual(job["result"]["peer_role"], "receiver")
 
 
 if __name__ == "__main__":

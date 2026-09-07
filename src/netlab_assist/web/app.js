@@ -1,7 +1,7 @@
 "use strict";
 
 const titles = {
-  guide: "开始使用",
+  guide: "连接工作台",
   throughput: "吞吐测试",
   acl: "ACL验证",
   multicast: "组播 IPTV",
@@ -12,6 +12,9 @@ const titles = {
 
 const jobs = { throughput: null, multicast: null, monitor: null };
 const historyKey = "netlab-assist-history-v1";
+const peerSessionKey = "netlab-assist-peer-v2";
+let localStatus = null;
+let peerConfig = null;
 
 function el(id) { return document.getElementById(id); }
 
@@ -21,10 +24,41 @@ async function api(path, body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   };
-  const response = await fetch(path, options);
+  let response;
+  try {
+    response = await fetch(path, options);
+  } catch (error) {
+    throw new Error("本机服务连接已中断。请确认 NetLab Assist 程序窗口仍在运行，然后刷新本页。");
+  }
   const data = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
   if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
   return data;
+}
+
+function peerFailureMessage(classification) {
+  const messages = {
+    invalid_code: "实验码不正确。请使用对端页面右上角显示的本轮实验码。",
+    refused: "对端拒绝连接。请确认另一台电脑已启动 NetLab Assist，控制端口保持 18080。",
+    timeout: "连接对端超时。优先检查是否填了错误的网卡 IP，以及 Windows 防火墙是否允许专用网络。",
+    network_error: "当前网络无法到达对端。请检查两端 IP、VLAN、网关和有线网卡状态。",
+    incompatible: "两台电脑的软件版本不兼容，请两端都替换为同一个最新版。",
+    service_blocked: "对端程序已找到，但数据端口被阻断。请允许 NetLab Assist 通过系统防火墙后重试。",
+    peer_error: "对端返回异常，请确认两台电脑都使用相同的最新版。",
+  };
+  return messages[classification] || "未能连接对端，请检查 IP、实验码和防火墙。";
+}
+
+function currentPeerPayload() {
+  if (!peerConfig) {
+    showPage("guide");
+    throw new Error("请先连接实验对端。另一台电脑只需保持程序运行，不需要点击开始。 ");
+  }
+  return {
+    target: peerConfig.target,
+    peer_token: peerConfig.peer_token,
+    peer_ui_port: peerConfig.peer_ui_port,
+    peer_throughput_port: peerConfig.throughput_port,
+  };
 }
 
 function toast(message, error = false) {
@@ -37,6 +71,114 @@ function toast(message, error = false) {
 
 function formObject(form) {
   return Object.fromEntries(new FormData(form).entries());
+}
+
+function setPairState(kind, text) {
+  const state = el("pair-state");
+  state.className = `connection-state ${kind}`;
+  state.querySelector("span").textContent = text;
+  const rail = el("link-label").parentElement;
+  rail.classList.toggle("connected", kind === "ready");
+  el("link-label").textContent = kind === "ready" ? "链路就绪" : kind === "testing" ? "检查中" : "等待连接";
+}
+
+function renderDiagnostics(result) {
+  const box = el("pair-diagnostics");
+  box.hidden = false;
+  box.textContent = "";
+  box.className = `diagnostic-strip ${result.ready ? "success" : "error"}`;
+  const summary = document.createElement("strong");
+  summary.textContent = result.ready
+    ? `连接检查通过：本机通过 ${result.route_ip || "当前实验网卡"} 到达对端，现在只需在本机点击测试。`
+    : peerFailureMessage(result.classification);
+  box.appendChild(summary);
+  const checks = Object.values(result.checks || {});
+  if (checks.length) {
+    const items = document.createElement("div");
+    items.className = "diagnostic-items";
+    const names = { control: "控制 18080", throughput: "吞吐", echo: "回显" };
+    for (const check of checks) {
+      const item = document.createElement("span");
+      item.textContent = `${check.ok ? "✓" : "×"} ${names[check.name] || check.name} · ${check.ok ? "正常" : check.classification}`;
+      items.appendChild(item);
+    }
+    box.appendChild(items);
+  }
+}
+
+function applyPeerState() {
+  const reuseIds = ["throughput-peer", "multicast-peer", "nat-peer", "monitor-peer"];
+  for (const id of reuseIds) {
+    const box = el(id);
+    if (!box) continue;
+    box.classList.toggle("ready", Boolean(peerConfig));
+    box.querySelector("span").textContent = peerConfig
+      ? `已连接 ${peerConfig.hostname || peerConfig.target} · ${peerConfig.target}:${peerConfig.peer_ui_port}`
+      : id === "monitor-peer" ? "连接对端后会自动填入目标，也可手动修改" : "请先在“连接工作台”连接对端";
+  }
+  if (peerConfig) {
+    const monitorForm = el("monitor-form");
+    monitorForm.elements.target.value = peerConfig.target;
+    monitorForm.elements.port.value = peerConfig.echo_port;
+  }
+}
+
+async function checkPeer(data, quiet = false) {
+  const form = el("pair-form");
+  const button = el("pair-button");
+  button.disabled = true;
+  button.textContent = "正在检查三项服务";
+  setPairState("testing", "正在检查");
+  try {
+    const result = await api("/api/peer/check", data);
+    renderDiagnostics(result);
+    if (!result.ready) {
+      peerConfig = null;
+      sessionStorage.removeItem(peerSessionKey);
+      applyPeerState();
+      setPairState("failed", "连接失败");
+      if (!quiet) toast(peerFailureMessage(result.classification), true);
+      return false;
+    }
+    peerConfig = {
+      target: result.target,
+      peer_token: data.peer_token,
+      peer_ui_port: number(data.peer_ui_port, 18080),
+      throughput_port: result.peer.throughput_port,
+      echo_port: result.peer.echo_port,
+      hostname: result.peer.hostname,
+      version: result.peer.version,
+    };
+    sessionStorage.setItem(peerSessionKey, JSON.stringify(peerConfig));
+    form.elements.target.value = peerConfig.target;
+    form.elements.peer_token.value = peerConfig.peer_token;
+    form.elements.peer_ui_port.value = peerConfig.peer_ui_port;
+    applyPeerState();
+    setPairState("ready", "对端已连接");
+    if (!quiet) toast("连接成功。后续测试只在本机点击一次。 ");
+    return true;
+  } catch (error) {
+    peerConfig = null;
+    sessionStorage.removeItem(peerSessionKey);
+    applyPeerState();
+    setPairState("failed", "连接失败");
+    renderDiagnostics({ ready: false, classification: "network_error", checks: {} });
+    if (!quiet) toast(error.message, true);
+    return false;
+  } finally {
+    button.disabled = false;
+    button.textContent = "连接并检查";
+  }
+}
+
+function pairingUI() {
+  const form = el("pair-form");
+  form.addEventListener("submit", async event => {
+    event.preventDefault();
+    const data = formObject(form);
+    data.peer_ui_port = number(data.peer_ui_port, 18080);
+    await checkPeer(data);
+  });
 }
 
 function number(value, fallback = 0) {
@@ -64,7 +206,7 @@ function resultSummary(record) {
   const data = record.data || {};
   if (record.kind === "throughput") return `${data.mode || "测试"} · ${formatMbps(data.aggregate_average_mbps)}`;
   if (record.kind === "acl") return `${data.passed || 0}/${data.total || 0} 符合预期，${data.uncertain || 0} 项待确认`;
-  if (record.kind === "multicast") return `${data.role || "组播"} · ${formatMbps(data.average_mbps)} · 丢包 ${data.loss_percent ?? "—"}%`;
+  if (record.kind === "multicast") return `${data.mode === "reverse" ? "对端→本机" : "本机→对端"} · ${formatMbps(data.average_mbps)} · 丢包 ${data.loss_percent ?? "—"}%`;
   if (record.kind === "dns") return `${data.name || "DNS"} · ${data.query_transaction_id || ""} · ${data.elapsed_ms || 0} ms`;
   if (record.kind === "nat") return `${data.client_local || ""} → ${data.client_destination || ""}`;
   if (record.kind === "monitor") return `可用率 ${data.availability_percent ?? "—"}% · 最长中断 ${data.longest_outage_s ?? "—"} s`;
@@ -117,7 +259,7 @@ function drawChart(canvas, samples, mode = "rate") {
   const values = samples.map(item => mode === "state" ? (item.up ? 1 : 0) : number(item.mbps));
   const yMax = mode === "state" ? 1 : Math.max(1, ...values) * 1.12;
   const groups = mode === "state" ? { state: samples } : Object.groupBy ? Object.groupBy(samples, item => item.direction || "rate") : samples.reduce((acc, item) => { const key = item.direction || "rate"; (acc[key] ||= []).push(item); return acc; }, {});
-  const colors = { forward: "#0a9f72", reverse: "#3977d5", rate: "#0a9f72", state: "#0a9f72" };
+  const colors = { forward: "#1677ff", reverse: "#20a7c9", rate: "#1677ff", state: "#18a875" };
   for (const [key, group] of Object.entries(groups)) {
     ctx.strokeStyle = colors[key] || "#8c6bd6"; ctx.lineWidth = 2.2; ctx.beginPath();
     group.forEach((item, index) => {
@@ -161,7 +303,9 @@ function throughputUI() {
   const form = el("throughput-form");
   form.addEventListener("submit", async event => {
     event.preventDefault();
-    const data = formObject(form);
+    let data;
+    try { data = { ...formObject(form), ...currentPeerPayload() }; }
+    catch (error) { toast(error.message, true); return; }
     data.duration = number(data.duration, 10); data.streams = number(data.streams, 4); data.peer_ui_port = number(data.peer_ui_port, 18080);
     el("throughput-state").textContent = "正在建立连接";
     try {
@@ -270,18 +414,23 @@ function aclUI() {
 function multicastUI() {
   const form = el("multicast-form");
   form.addEventListener("submit", async event => {
-    event.preventDefault(); const data = formObject(form); data.port = number(data.port); data.duration = number(data.duration); data.rate_mbps = number(data.rate_mbps);
+    event.preventDefault();
+    let data;
+    try { data = { ...formObject(form), ...currentPeerPayload() }; }
+    catch (error) { toast(error.message, true); return; }
+    data.port = number(data.port); data.duration = number(data.duration); data.rate_mbps = number(data.rate_mbps);
     try {
-      const started = await api("/api/multicast/start", data);
+      const started = await api("/api/multicast/pair", data);
       pollJob("multicast", started.job_id, job => {
-        el("multicast-state").textContent = `${data.role === "sender" ? "发送" : "接收"}中 ${Math.round(job.progress * 100)}%`;
+        el("multicast-state").textContent = `两端自动协同中 ${Math.round(job.progress * 100)}%`;
         const samples = job.samples || []; const last = samples.at(-1);
         el("multicast-live").firstChild.textContent = `${last ? number(last.mbps).toFixed(1) : "0.0"} `;
         drawChart(el("multicast-chart"), samples);
         if (last) { el("mc-packets").textContent = last.packets ?? "—"; el("mc-loss").textContent = last.lost === undefined ? "—" : `${last.lost}包`; }
       }, job => {
         if (job.status === "completed") {
-          el("multicast-state").textContent = "任务完成"; el("mc-packets").textContent = job.result.packets ?? "—"; el("mc-loss").textContent = job.result.loss_percent === undefined ? "—" : `${job.result.loss_percent}%`; el("mc-ooo").textContent = job.result.out_of_order ?? "—";
+          el("multicast-state").textContent = "两端任务完成"; el("mc-packets").textContent = job.result.packets ?? "—"; el("mc-loss").textContent = job.result.loss_percent === undefined ? "—" : `${job.result.loss_percent}%`; el("mc-ooo").textContent = job.result.out_of_order ?? "—";
+          el("multicast-live").firstChild.textContent = `${number(job.result.average_mbps).toFixed(1)} `;
           saveRecord("multicast", "组播IPTV", job.result);
         } else { el("multicast-state").textContent = job.error || job.status; toast(job.error || "任务已停止", job.status === "failed"); }
       });
@@ -299,7 +448,11 @@ function dnsNatUI() {
     catch (error) { el("dns-result").textContent = error.message; toast(error.message, true); }
   });
   el("nat-form").addEventListener("submit", async event => {
-    event.preventDefault(); const data = formObject(event.currentTarget); data.port = number(data.port);
+    event.preventDefault();
+    let data;
+    try {
+      data = { ...currentPeerPayload(), port: peerConfig.echo_port };
+    } catch (error) { toast(error.message, true); return; }
     el("nat-result").textContent = "正在连接";
     try { const result = await api("/api/nat", data); el("nat-result").textContent = JSON.stringify(result, null, 2); saveRecord("nat", "NAT元组", result); }
     catch (error) { el("nat-result").textContent = error.message; toast(error.message, true); }
@@ -345,27 +498,67 @@ function recordsUI() {
   el("clear-records").addEventListener("click", () => { if (confirm("只清空当前浏览器中的实验记录，已导出的文件不会删除。确认继续吗？")) { localStorage.removeItem(historyKey); renderRecords(); } });
 }
 
-function navigationUI() {
-  el("navigation").addEventListener("click", event => {
-    const button = event.target.closest("[data-page]"); if (!button) return; const page = button.dataset.page;
-    document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item === button));
+function showPage(page) {
+    document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.page === page));
     document.querySelectorAll(".page").forEach(item => item.classList.toggle("active", item.id === `page-${page}`));
     el("page-title").textContent = titles[page];
     if (page === "records") renderRecords();
     requestAnimationFrame(() => { document.querySelectorAll("canvas").forEach(canvas => drawChart(canvas, [])); });
+}
+
+function navigationUI() {
+  el("navigation").addEventListener("click", event => {
+    const button = event.target.closest("[data-page]"); if (!button) return;
+    showPage(button.dataset.page);
   });
 }
 
 async function initialize() {
-  navigationUI(); throughputUI(); aclUI(); multicastUI(); dnsNatUI(); monitorUI(); recordsUI();
+  navigationUI(); pairingUI(); throughputUI(); aclUI(); multicastUI(); dnsNatUI(); monitorUI(); recordsUI();
   document.querySelectorAll("[data-stop-job]").forEach(button => button.addEventListener("click", stopActiveJobs));
-  drawChart(el("throughput-chart"), []); drawChart(el("multicast-chart"), []); drawChart(el("monitor-chart"), [], "state"); renderRecords();
+  drawChart(el("throughput-chart"), []); drawChart(el("multicast-chart"), []); drawChart(el("monitor-chart"), [], "state"); renderRecords(); applyPeerState();
   try {
     const status = await api("/api/status");
-    el("local-ip").textContent = `${status.local_ips.find(ip => !ip.startsWith("127.")) || status.local_ips[0]}:${status.ui_port}`;
+    localStatus = status;
+    const primaryIp = status.local_ips.find(ip => !ip.startsWith("127.")) || status.local_ips[0];
+    el("local-ip").textContent = `${primaryIp}:${status.ui_port}`;
+    el("local-node-name").textContent = status.hostname;
+    el("app-version").textContent = `v${status.version}`;
+    const ipList = el("local-ip-list");
+    ipList.textContent = "";
+    status.local_ips.filter(ip => !ip.startsWith("127.")).forEach(ip => {
+      const tag = document.createElement("span");
+      tag.textContent = `${ip}:${status.ui_port}`;
+      ipList.appendChild(tag);
+    });
+    if (!ipList.children.length) {
+      const tag = document.createElement("span"); tag.textContent = `127.0.0.1:${status.ui_port}`; ipList.appendChild(tag);
+    }
     el("copy-code").textContent = status.access_code;
     el("copy-code").addEventListener("click", async () => { await navigator.clipboard.writeText(status.access_code); toast("实验码已复制"); });
+    try {
+      const restored = JSON.parse(sessionStorage.getItem(peerSessionKey) || "null");
+      if (restored?.target && restored?.peer_token) {
+        const form = el("pair-form");
+        form.elements.target.value = restored.target;
+        form.elements.peer_token.value = restored.peer_token;
+        form.elements.peer_ui_port.value = restored.peer_ui_port || 18080;
+        await checkPeer({ target: restored.target, peer_token: restored.peer_token, peer_ui_port: restored.peer_ui_port || 18080 }, true);
+      }
+    } catch { sessionStorage.removeItem(peerSessionKey); }
   } catch (error) { toast(`无法读取本机状态：${error.message}`, true); }
+
+  setInterval(async () => {
+    const state = el("service-state");
+    try {
+      await api("/api/status");
+      state.classList.remove("offline");
+      state.querySelector("span").textContent = "服务正常";
+    } catch {
+      state.classList.add("offline");
+      state.querySelector("span").textContent = "服务断开";
+    }
+  }, 5000);
 }
 
 initialize();
