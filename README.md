@@ -1,4 +1,36 @@
-# NetLab Assist｜轻量化网络实验助手
+# NetLab Assist
+
+**Network lab automation, built with AI-assisted development.**
+
+[![Build](https://github.com/lzwhirstle/netlab-assist/actions/workflows/build.yml/badge.svg)](https://github.com/lzwhirstle/netlab-assist/actions/workflows/build.yml)
+[![Release](https://img.shields.io/github/v/release/lzwhirstle/netlab-assist)](https://github.com/lzwhirstle/netlab-assist/releases/latest)
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+![Platforms](https://img.shields.io/badge/Platforms-Windows%20%7C%20macOS-0f766e)
+
+Run the application on two computers, then control both from one browser. Generate test traffic, inspect protocol behavior and export results for review.
+
+[**Download v0.2.0**](https://github.com/lzwhirstle/netlab-assist/releases/tag/v0.2.0) · [Experiment guide](docs/EXPERIMENT_GUIDE.md) · [Validation approach](docs/VALIDATION.md) · [中文使用说明](#轻量化网络实验助手)
+
+## Project at a glance
+
+| Problem | Implementation | Reviewable evidence |
+| :--- | :--- | :--- |
+| Coordinating two lab computers is repetitive | One-sided peer control and readiness checks | Peer orchestration in `server.py`; API tests |
+| Proxy settings and multiple NICs complicate tests | Direct peer HTTP and route-aware multicast binding | Protocol implementation in `protocols.py` |
+| Measurements need context | Explicit failure states, baselines and JSON/Markdown exports | Validation guide and browser result history |
+| A useful tool needs accessible distribution | Standard-library Python runtime; standalone desktop builds | GitHub Actions and Windows/macOS release assets |
+
+**AI development approach:** AI-assisted implementation and iteration, guided by network requirements and checked through automated tests. The shipped application performs network measurements; it has no embedded LLM or ML inference dependency.
+
+```mermaid
+flowchart LR
+    A[Local browser] --> B[Node A: Python service]
+    B -->|Authenticated peer control| C[Node B: Python service]
+    B <-->|TCP / UDP test traffic| C
+    B --> D[JSON + Markdown results]
+```
+
+## 轻量化网络实验助手
 
 NetLab Assist 面向交换测试新人和实验室日常验证。两台电脑各运行一次程序，只在其中一台完成“连接实验对端”并点击测试，另一台保持程序运行即可。工具可完成吞吐、ACL、DNS/NAT、组播和连续可达性测试。源码运行时只依赖 Python 标准库，不需要安装 iPerf、数据库或 Controller。
 
@@ -83,4 +115,4 @@ GitHub Actions 会在每次推送后运行自动化测试，并生成 Windows、
 
 ## 当前状态
 
-版本 `0.2.0`，内部预览版。开始正式性能测试前，应先与一个获准的参考工具做交叉验证。
+版本 `0.2.0`，实验工具预览版。开始正式性能测试前，应先与一个获准的参考工具做交叉验证。
